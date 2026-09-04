@@ -136,8 +136,8 @@ rate_change_distribution <- function(comparison,
     out$record_share <- if (n != 0) out$record_count / n else NA_real_
   } else {
     parent_key <- .rr_make_key(out, by)
-    out$current_premium_share <- ave(out$current_premium, parent_key, FUN = function(v) if (sum(v) != 0) v / sum(v) else rep(NA_real_, length(v)))
-    out$record_share <- ave(out$record_count, parent_key, FUN = function(v) v / sum(v))
+    out$current_premium_share <- stats::ave(out$current_premium, parent_key, FUN = function(v) if (sum(v) != 0) v / sum(v) else rep(NA_real_, length(v)))
+    out$record_share <- stats::ave(out$record_count, parent_key, FUN = function(v) v / sum(v))
   }
   out
 }

@@ -94,7 +94,7 @@ read_rate_workbook <- function(file, return = c("long", "tables"), validate = TR
   miss <- setdiff(needed, sheets)
   if (length(miss)) stop("Workbook is missing rate sheet(s): ", paste(miss, collapse = ", "), ".", call. = FALSE)
 
-  tabs <- setNames(lapply(needed, function(s) openxlsx2::wb_to_df(wb, sheet = s, check_names = FALSE)), needed)
+  tabs <- stats::setNames(lapply(needed, function(s) openxlsx2::wb_to_df(wb, sheet = s, check_names = FALSE)), needed)
   attr(tabs, "manifest") <- manifest[c("sheet_name", "term_name", "layout", "coverage", "depth", "metadata_cols")]
   attr(tabs, "schema_version") <- if ("schema_version" %in% names(manifest)) as.character(manifest$schema_version[1]) else "1"
   class(tabs) <- c("raterevision_tables", "list")
