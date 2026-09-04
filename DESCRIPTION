@@ -1,0 +1,28 @@
+Package: raterevision
+Title: Insurance Rate Revision Workflow Tools
+Version: 0.1.0
+Authors@R: person("Greg", "Sollenberger", email = "yagreg7@yahoo.com", role = c("aut", "cre", "cph"))
+Description: Provides tools for insurance rate revision workflows around normalized
+    rating factor tables. Functions reshape long-form rating tables into
+    actuary-friendly wide tables, round-trip those tables through Microsoft Excel,
+    apply and review proposed factor changes, rebase and normalize relativities,
+    compare current and proposed rating output, summarize rate impacts, and solve
+    a one-dimensional rate-level adjustment to meet a target aggregate rate change.
+    The package is designed to work naturally with 'ratingtables' while remaining
+    usable with ordinary data frames and arbitrary user-supplied rating code.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends: R (>= 4.1.0)
+Imports:
+    openxlsx2,
+    stats,
+    utils
+Suggests:
+    knitr,
+    rmarkdown,
+    ratingtables (>= 0.2.0),
+    testthat (>= 3.0.0)
+VignetteBuilder: knitr
+Roxygen: list(markdown = TRUE)
+Config/testthat/edition: 3
+Config/roxygen2/version: 8.0.0

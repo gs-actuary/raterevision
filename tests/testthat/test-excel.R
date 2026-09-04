@@ -1,0 +1,21 @@
+test_that("Excel workbooks round trip deterministically", {
+  skip_if_not_installed("openxlsx2")
+  x <- rr_test_factors()
+  f <- tempfile(fileext = ".xlsx")
+  write_rate_workbook(x, f, matrix_terms = "age_gender")
+  expect_true(file.exists(f))
+  y <- read_rate_workbook(f)
+  expect_equal(nrow(rate_plan_diff(x, y, include_unchanged = FALSE)), 0L)
+  tabs <- read_rate_workbook(f, return = "tables")
+  expect_s3_class(tabs, "raterevision_tables")
+  expect_true(is.data.frame(attr(tabs, "manifest")))
+})
+
+test_that("Excel writer requires xlsx and honors overwrite", {
+  skip_if_not_installed("openxlsx2")
+  x <- rr_test_factors()
+  expect_error(write_rate_workbook(x, tempfile(fileext = ".csv")), "xlsx")
+  f <- tempfile(fileext = ".xlsx")
+  write_rate_workbook(x, f)
+  expect_error(write_rate_workbook(x, f, overwrite = FALSE), "already exists")
+})

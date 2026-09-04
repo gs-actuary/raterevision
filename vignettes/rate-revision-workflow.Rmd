@@ -1,0 +1,524 @@
+---
+title: "Rate Revision Workflow with raterevision"
+author: "Greg Sollenberger"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Rate Revision Workflow with raterevision}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+library(raterevision)
+```
+
+## Purpose
+
+`raterevision` supports the mechanics around an insurance rate revision. It does
+not replace a rating engine and it does not prescribe how an actuary should
+derive indicated relativities. Instead, it provides a controlled path for:
+
+1. converting normalized rating factors to human-friendly tables;
+2. round-tripping those tables through Excel;
+3. making the same types of changes programmatically;
+4. reviewing exactly what changed;
+5. comparing current and proposed premium output; and
+6. solving one final rate-level parameter to hit an aggregate target.
+
+Most functions work on ordinary data frames. The package is designed to pair
+naturally with `ratingtables`, but the premium-comparison and target-solving
+functions are deliberately rating-engine agnostic.
+
+## A small normalized rate plan
+
+The examples below use two charters and two coverages. The source format is long:
+one row per factor value and rating key.
+
+```{r example-data}
+make_rows <- function(charter, coverage, term_name, term_value,
+                      variable1 = NA_character_, level1 = NA_character_,
+                      variable2 = NA_character_, level2 = NA_character_) {
+  n <- max(length(term_value), length(level1), length(level2), 1L)
+  data.frame(
+    state = rep("IL", n),
+    charter = rep(charter, n),
+    rate_eff_date = rep(as.Date("2026-01-01"), n),
+    coverage = rep(coverage, n),
+    term_name = rep(term_name, n),
+    term_value = rep(term_value, length.out = n),
+    variable1 = rep(variable1, length.out = n),
+    level1 = rep(level1, length.out = n),
+    variable2 = rep(variable2, length.out = n),
+    level2 = rep(level2, length.out = n),
+    stringsAsFactors = FALSE
+  )
+}
+
+pieces <- list()
+k <- 1L
+for (charter in c("A", "B")) {
+  for (coverage in c("BI", "CL")) {
+    pieces[[k]] <- make_rows(
+      charter, coverage, "base_rate",
+      if (charter == "A") c(BI = 220, CL = 180)[coverage]
+      else c(BI = 230, CL = 190)[coverage]
+    ); k <- k + 1L
+
+    pieces[[k]] <- make_rows(
+      charter, coverage, "driver_age",
+      c(1.60, 1.35, 1.18, 1.05, 1.00),
+      "driver_age", c("16", "17", "18", "20", "52")
+    ); k <- k + 1L
+
+    pieces[[k]] <- make_rows(
+      charter, coverage, "territory",
+      c(.90, 1.00, 1.10, 1.20),
+      "territory", c("T1", "T2", "T3", "T4")
+    ); k <- k + 1L
+
+    grid <- expand.grid(
+      driver_age = c("16", "17", "20"),
+      gender = c("M", "F"), stringsAsFactors = FALSE
+    )
+    pieces[[k]] <- make_rows(
+      charter, coverage, "age_gender_interaction",
+      c(1.08, 1.05, 1.02, .99, .99, 1.00),
+      "driver_age", grid$driver_age,
+      "gender", grid$gender
+    ); k <- k + 1L
+  }
+}
+
+current <- do.call(rbind, pieces)
+current$factor_row_id <- seq_len(nrow(current))
+rownames(current) <- NULL
+
+head(current)
+```
+
+The package requires `coverage`, `term_name`, and `term_value`. Columns outside
+the structural `variableN`/`levelN` slots are treated as rate-set metadata and
+are preserved. This lets state, charter, company, program, effective period, or
+other user-defined identifiers travel through the workflow without being
+hard-coded into the package.
+
+## Validate before editing
+
+```{r validate}
+validate_rate_plan(current)
+```
+
+`validate_rate_plan()` is revision-oriented rather than a replacement for a
+rating engine's full plan validation. It detects malformed factor values,
+duplicate keys, missing coverage/term identifiers, inconsistent variable/level
+slots, and optional non-positive multiplicative factors.
+
+```{r validate-error, error=TRUE}
+bad <- rbind(current, current[1, ])
+validate_rate_plan(bad)
+```
+
+For programmatic inspection without stopping:
+
+```{r validate-inspect}
+issues <- validate_rate_plan(bad, error = FALSE)
+issues
+```
+
+## Wide tables for actuaries
+
+`rate_tables_wide()` creates the package's core intermediate representation: a
+named list of ordinary data frames. Coverages become columns and rows retain
+rate-set metadata, variable names, and levels.
+
+```{r wide}
+wide <- rate_tables_wide(current)
+wide
+head(wide$driver_age, 12)
+```
+
+Numeric-looking levels are sorted numerically, so ages such as 16 through 90 do
+not sort lexicographically. Separate charters, states, and effective periods are
+kept as separate row groups.
+
+A revision can be scoped explicitly instead of asking the package to guess which
+rate set is "current":
+
+```{r filters}
+a_only <- rate_tables_wide(current, filters = list(state = "IL", charter = "A"))
+head(a_only$driver_age)
+```
+
+The named list is useful even when Excel is not involved. A user may inspect it,
+transform it with base R or `purrr::map()`, write it to another system, or pass
+it directly to `rate_tables_long()`.
+
+```{r in-memory-roundtrip}
+back_to_long <- rate_tables_long(wide)
+rate_plan_diff(current, back_to_long, include_unchanged = FALSE)
+```
+
+An empty result demonstrates the intended round-trip invariant.
+
+### Two-way interactions as matrices
+
+Interactions remain long by default. A selected two-way interaction can instead
+be shown as a matrix, with one variable down rows and the other across columns.
+A separate matrix sheet/table is created for each coverage.
+
+```{r matrix}
+wide_matrix <- rate_tables_wide(
+  current,
+  matrix_terms = "age_gender_interaction"
+)
+
+interaction_names <- grep("age_gender_interaction", names(wide_matrix), value = TRUE)
+interaction_names
+wide_matrix[[interaction_names[1]]]
+```
+
+Three-way and deeper interactions are intentionally prohibited from matrix
+layout because a two-dimensional spreadsheet representation is no longer
+unambiguous. They remain in long form.
+
+## Excel round trip
+
+Excel support is explicit rather than accidental. `write_rate_workbook()` writes
+the named-list representation to `.xlsx`, with a visible instruction tab and a
+very-hidden machine manifest that records how each sheet should be reconstructed.
+
+```{r excel-write, eval=FALSE}
+write_rate_workbook(
+  current,
+  "IL_rate_revision.xlsx",
+  filters = list(state = "IL"),
+  matrix_terms = "age_gender_interaction"
+)
+```
+
+An actuary can then overwrite factors, add rating-level rows, remove rows, or
+clear individual coverage cells. On import, a blank factor cell means that
+factor key is absent for that coverage. Structural column names and the hidden
+manifest should not be renamed or deleted.
+
+```{r excel-read, eval=FALSE}
+proposed_from_excel <- read_rate_workbook("IL_rate_revision.xlsx")
+validate_rate_plan(proposed_from_excel)
+rate_plan_diff(current, proposed_from_excel, include_unchanged = FALSE)
+```
+
+Use `return = "tables"` when the desired output is the named list rather than the
+normalized long table.
+
+```{r excel-tables, eval=FALSE}
+editable_tables <- read_rate_workbook("IL_rate_revision.xlsx", return = "tables")
+```
+
+## Programmatic revisions
+
+The Excel route and programmatic route are intentionally parallel. Both produce
+the same normalized factor-table structure for the downstream rater.
+
+### Replace a complete factor set
+
+Suppose a modeling team delivers a complete new age curve:
+
+```{r replacement}
+new_age <- current[current$term_name == "driver_age", , drop = FALSE]
+age <- as.numeric(new_age$level1)
+new_age$term_value <- new_age$term_value * ifelse(age < 20, 1.04, .99)
+
+proposed <- replace_factor_set(current, new_age)
+head(rate_plan_diff(current, proposed, include_unchanged = FALSE))
+```
+
+`replace_factor_set()` treats matching slices as complete. Therefore an omitted
+level is removed from that slice. This is different from a sparse update.
+
+### Update selected cells
+
+```{r sparse-update}
+one_change <- proposed[
+  proposed$charter == "A" &
+    proposed$coverage == "BI" &
+    proposed$term_name == "territory" &
+    proposed$level1 == "T4",
+  , drop = FALSE
+]
+one_change$term_value <- 1.28
+proposed <- update_factors(proposed, one_change)
+```
+
+A key that does not already exist is rejected by default. This catches many
+mistyped levels. A genuinely new rating level must be explicit:
+
+```{r add-level}
+new_level <- one_change
+new_level$level1 <- "T5"
+new_level$term_value <- 1.35
+new_level$factor_row_id <- NULL
+
+proposed <- update_factors(
+  proposed,
+  new_level,
+  allow_new_levels = TRUE
+)
+```
+
+## Rebasing is not normalization
+
+These operations are related but answer different questions.
+
+### Rebase to a displayed 1.000 level
+
+If age 20 should become the reference level, divide every factor in each
+applicable rate-set/coverage table by the age-20 factor:
+
+```{r rebase}
+rebased <- rebase_factor_set(
+  proposed,
+  term_name = "driver_age",
+  base_level = "20"
+)
+
+rebased[
+  rebased$term_name == "driver_age" & rebased$level1 == "20",
+  c("charter", "coverage", "level1", "term_value")
+]
+```
+
+This preserves pairwise relativities. It does *not* preserve aggregate premium
+unless a corresponding rate-level adjustment is made elsewhere.
+
+### Normalize a weighted average
+
+Normalization instead scales a factor set so its weighted mean equals a target.
+For example, attach portfolio exposure weights to the territory rows:
+
+```{r normalize}
+territory <- proposed[proposed$term_name == "territory", , drop = FALSE]
+territory$exposure <- c(T1 = 40, T2 = 30, T3 = 20, T4 = 8, T5 = 2)[territory$level1]
+
+normalized_territory <- normalize_factor_set(
+  territory,
+  term_name = "territory",
+  weights = "exposure",
+  target_mean = 1
+)
+
+head(normalized_territory)
+```
+
+The exposure column is analysis metadata and would normally be removed before
+putting the normalized factor set back into a production factor table.
+
+## Audit the proposal
+
+```{r diff}
+changes <- rate_plan_diff(current, proposed, include_unchanged = FALSE)
+table(changes$status)
+head(changes, 15)
+```
+
+The diff classifies factor keys as `added`, `removed`, `changed`, or `unchanged`
+and reports absolute and percentage changes. This is useful after either Excel
+or programmatic revision.
+
+## Compare current and proposed premium
+
+`raterevision` does not require the current and proposed rating algorithms to be
+identical. It only needs comparable output at this stage.
+
+A `ratingtables` result naturally contains one `indicated_<coverage>` column per
+coverage, which is detected automatically. Here we create analogous output
+without requiring any rating package:
+
+```{r outputs}
+current_output <- data.frame(
+  vehicle_id = paste0("V", 1:5),
+  charter = c("A", "A", "A", "B", "B"),
+  territory = c("T1", "T2", "T4", "T2", "T4"),
+  indicated_BI = c(400, 525, 610, 480, 650),
+  indicated_CL = c(250, 0, 390, 300, 0),
+  stringsAsFactors = FALSE
+)
+
+proposed_output <- current_output
+proposed_output$indicated_BI <- c(420, 540, 655, 475, 705)
+proposed_output$indicated_CL <- c(260, 0, 405, 315, 0)
+
+impact <- compare_rating_outputs(
+  current_output,
+  proposed_output,
+  id_cols = "vehicle_id",
+  keep_cols = c("charter", "territory")
+)
+
+impact
+```
+
+The comparison table is long by coverage and carries record-level current and
+proposed premium, dollar change, and percent change.
+
+```{r summaries}
+summarize_rate_change(impact, by = NULL)
+summarize_rate_change(impact, by = "coverage")
+summarize_rate_change(impact, by = c("charter", "coverage"))
+```
+
+Rate dislocation can be summarized in configurable buckets:
+
+```{r distribution}
+rate_change_distribution(impact)
+rate_change_distribution(impact, by = "coverage")
+```
+
+Already-long rating output is also supported by supplying `premium_col` and
+`coverage_col` to `compare_rating_outputs()`.
+
+## Solve the final rate level
+
+Classification changes often produce some rate effect before the base-rate
+change is applied. `solve_rate_target()` finds one scalar parameter that makes an
+arbitrary proposed rating workflow hit a target aggregate premium.
+
+The simplest example is algebraically obvious but demonstrates the interface:
+
+```{r solve-simple}
+solution <- solve_rate_target(
+  current_premium = 1e6,
+  target = .06,
+  rate_function = function(x) 980000 * x,
+  interval = c(.5, 1.5),
+  parameter_name = "base-rate multiplier"
+)
+solution
+```
+
+The important feature is that `rate_function()` may contain arbitrary R code.
+It may create a new `ratingtables` spec, rate drivers, aggregate driver factors,
+join them to vehicles, rate vehicles, apply minimums/rounding, and finally return
+premium. Only the one scalar controlled by `x` must be identified.
+
+For example, the pattern for a structurally different proposed workflow is:
+
+```{r solve-arbitrary, eval=FALSE}
+solution <- solve_rate_target(
+  current_premium = sum(current_rated$premium),
+  target = .06,
+  rate_function = function(x) {
+    proposed_rated <- completely_new_proposed_workflow(
+      input_data,
+      base_multiplier = x
+    )
+    proposed_rated$premium
+  }
+)
+```
+
+This is why the solver does not accept a special "rater object": the callback is
+the abstraction.
+
+### Separate base rates by territory
+
+Separate implemented territory bases do not require a different solver when the
+revision has one intended rate-level degree of freedom. Put the proposed
+territorial *shape* into the callback and multiply every base by the same `x`:
+
+```{r territory-base-solve}
+current_bases <- c(T1 = 250, T2 = 275, T3 = 300, T4 = 330)
+proposed_bases <- c(T1 = 245, T2 = 280, T3 = 315, T4 = 360)
+counts <- c(T1 = 400, T2 = 350, T3 = 180, T4 = 70)
+
+territory_solution <- solve_rate_target(
+  current_premium = sum(current_bases * counts),
+  target = .08,
+  rate_function = function(x) proposed_bases * x * counts,
+  interval = c(.5, 1.5),
+  parameter_name = "common territory-base multiplier"
+)
+
+territory_solution
+proposed_bases * territory_solution$parameter
+```
+
+The function deliberately does not attempt to solve four independently movable
+territory bases from one statewide target. That problem has infinitely many
+solutions unless the actuary provides additional constraints or targets.
+
+## A realistic multi-stage rating workflow
+
+A common auto workflow cannot be represented as one call to one policy rater:
+
+```
+drivers
+  -> rate driver factors
+  -> average by household/policy
+  -> join averages to vehicles
+  -> rate vehicles
+  -> aggregate/analyze premium
+```
+
+With `ratingtables`, the orchestration can be an ordinary R function:
+
+```{r workflow-outline, eval=FALSE}
+rate_book <- function(inputs, factor_table, base_multiplier = 1) {
+  factors <- factor_table
+  factors$term_value[factors$term_name == "base_rate"] <-
+    factors$term_value[factors$term_name == "base_rate"] * base_multiplier
+
+  driver_plan <- ratingtables::new_rating_plan(
+    driver_factors, driver_spec,
+    coverages = c("BI", "CL"),
+    use_rate_set_key = TRUE
+  )
+
+  drivers <- ratingtables::rate_entities(inputs$drivers, driver_plan)
+
+  driver_avg <- ratingtables::aggregate_entity_values(
+    drivers$rated_data,
+    group_col = "household_id",
+    value_cols = c("indicated_BI", "indicated_CL"),
+    aggregation = "mean",
+    output_names = c("avg_driver_BI", "avg_driver_CL")
+  )
+
+  vehicles <- ratingtables::join_entity_values(
+    inputs$vehicles, driver_avg, by = "household_id"
+  )
+
+  vehicle_plan <- ratingtables::new_rating_plan(
+    vehicle_factors, vehicle_spec,
+    coverages = c("BI", "CL"),
+    use_rate_set_key = TRUE
+  )
+
+  ratingtables::rate_policies(vehicles, vehicle_plan)
+}
+```
+
+`compare_rating_outputs()` does not care how `current_output` and
+`proposed_output` were produced, and `solve_rate_target()` can repeatedly call
+this entire function. The repository's `scripts/03_driver_averaging_rate_change.R`
+and `scripts/04_solve_rate_target.R` contain complete runnable versions of this
+workflow.
+
+## Suggested revision sequence
+
+A practical rate revision can therefore follow this pattern:
+
+1. validate and select the current factor table;
+2. export an Excel workbook and/or construct factor changes in R;
+3. import or apply proposed factor changes;
+4. use `rate_plan_diff()` and `validate_rate_plan()` before rating;
+5. execute the full current and proposed rating workflows;
+6. standardize output with `compare_rating_outputs()`;
+7. review aggregate and distributional impacts;
+8. solve a final common rate-level parameter if needed;
+9. rerate and verify the final achieved change.
+
+The Excel route and programmatic route are intentionally interchangeable. Excel
+is supported as a first-class actuarial interface, while the canonical data
+structures remain ordinary R data frames and lists.
