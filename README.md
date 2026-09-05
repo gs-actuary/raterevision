@@ -116,3 +116,42 @@ The repository `scripts/` directory contains line-by-line runnable walkthroughs:
 These scripts are intentionally excluded from the built package so they can be
 verbose, exploratory, and useful for live demonstrations. The installed package
 also includes the vignette `vignette("rate-revision-workflow", package = "raterevision")`.
+
+## Legacy workbook harvesting
+
+For a legacy Excel rater that was not created by `raterevision`, start with a heuristic profile rather than a blank rebuild:
+
+```r
+profile <- profile_rate_workbook("legacy_rater.xlsx")
+profile
+
+# Review/edit ordinary columns such as include, table_name, extract_range,
+# and header_row before extraction.
+profile$include[profile$confidence < .35] <- FALSE
+
+legacy_tables <- extract_rate_tables(profile)
+legacy_tables
+```
+
+The profiler makes educated structural guesses; it does not pretend arbitrary workbooks are self-describing. Low-confidence candidates stay in the profile for human review. Extracted tables are raw migration inputs and should be normalized/validated before becoming a production `ratingtables` plan.
+
+## Diagnose a rater migration
+
+After rating the same records through a trusted rater and the candidate implementation:
+
+```r
+comparison <- compare_rating_outputs(
+  trusted_output,
+  candidate_output,
+  id_cols = "vehicle_id",
+  keep_cols = c("territory", "driver_age", "marital_status", "credit")
+)
+
+diagnosis <- diagnose_rating_output(comparison)
+diagnosis
+
+diagnosis$suspects
+diagnosis$interaction_signals
+```
+
+The diagnostic first checks discrepancies by rating-variable level, then uses lightweight background models to rank likely sources of missing or incorrect premiums. The default print method reports conclusions rather than model internals.

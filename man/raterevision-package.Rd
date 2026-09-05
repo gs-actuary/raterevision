@@ -25,6 +25,14 @@ The main workflow is:
 \item solve a scalar rate-level adjustment with \code{\link[=solve_rate_target]{solve_rate_target()}}.
 }
 }
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/gs-actuary/raterevision}
+  \item Report bugs at \url{https://github.com/gs-actuary/raterevision/issues}
+}
+
+}
 \author{
 \strong{Maintainer}: Greg Sollenberger \email{yagreg7@yahoo.com} [copyright holder]
 
