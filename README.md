@@ -18,17 +18,19 @@ agnostic to the rating implementation: its callback may run a different spec,
 perform driver averaging, call custom code, or multiply an entire vector of
 territory-specific base rates by a common scalar.
 
-## Development installation
+## Installation
 
-From a local checkout:
+Once available on CRAN, install the released version with:
 
 ```r
-devtools::document()
-devtools::install()
+install.packages("raterevision")
 ```
 
-Once the GitHub repository is public, the development version can be installed
-with `pak::pkg_install("gs-actuary/raterevision")`.
+Install the development version from GitHub with:
+
+```r
+pak::pkg_install("gs-actuary/raterevision")
+```
 
 ## Excel round trip
 
