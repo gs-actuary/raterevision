@@ -343,7 +343,8 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
   } else if (nrow(x$suspects)) {
     cat("\nLikely places to investigate:\n")
     for (i in seq_len(nrow(x$suspects))) {
-      cat(" ", i, ". ", x$suspects$variable[i], " — ", x$suspects$conclusion[i], "\n", sep = "")
+      cat(" ", i, ". ", x$suspects$variable[i], " - ",
+          x$suspects$conclusion[i], "\n", sep = "")
     }
   } else {
     cat("\nNo investigated rating variable meaningfully separates the discrepancies; check for a global error or an omitted predictor.\n")
