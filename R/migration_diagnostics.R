@@ -28,8 +28,9 @@
 #' @param seed Random seed used only when down-sampling for background models.
 #'
 #' @return An object of class `raterevision_rater_diagnosis` containing summary
-#'   counts, variable/level diagnostics, model signals, interaction signals, and
-#'   the fitted lightweight models for advanced inspection.
+#'   counts, variable/level diagnostics, optional `coverage_summary` and
+#'   `coverage_level_details` (when `coverage` is present), model signals,
+#'   interaction signals, and the fitted lightweight models for advanced inspection.
 #' @export
 diagnose_rating_output <- function(comparison, predictors = NULL,
                                    absolute_tolerance = 0.01,
@@ -41,14 +42,14 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
                                    seed = 1L) {
   if (!is.data.frame(comparison)) stop("comparison must be a data frame.", call. = FALSE)
   .rr_assert_cols(comparison, c("current_premium", "proposed_premium"), "comparison")
-  
+
   absolute_tolerance <- .rr_nonnegative_number(absolute_tolerance, "absolute_tolerance")
   relative_tolerance <- .rr_nonnegative_number(relative_tolerance, "relative_tolerance")
   top_n <- .rr_diag_nonnegative_integer(top_n, "top_n")
   model_sample <- .rr_diag_positive_integer(model_sample, "model_sample")
   max_model_levels <- .rr_diag_positive_integer(max_model_levels, "max_model_levels")
   interaction_top <- .rr_diag_nonnegative_integer(interaction_top, "interaction_top")
-  
+
   x <- as.data.frame(comparison, stringsAsFactors = FALSE)
   cur <- suppressWarnings(as.numeric(x$current_premium))
   prop <- suppressWarnings(as.numeric(x$proposed_premium))
@@ -64,13 +65,13 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
   wrong <- both_present & abs_error > tolerance
   material_mismatch <- candidate_missing | wrong
   matched <- truth_present & !material_mismatch
-  
+
   x$.rr_missing <- candidate_missing
   x$.rr_wrong <- wrong
   x$.rr_mismatch <- material_mismatch
   x$.rr_signed_error <- signed_error
   x$.rr_abs_error <- abs_error
-  
+
   if (is.null(predictors)) {
     reserved <- unique(c(
       attr(comparison, "id_cols"),
@@ -82,13 +83,13 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
     predictors <- unique(as.character(predictors))
     .rr_assert_cols(x, predictors, "comparison")
   }
-  
+
   predictors <- predictors[vapply(x[predictors], .rr_diag_usable_predictor, logical(1))]
   if (!length(predictors)) {
     stop("No usable predictor columns are available. Carry rating variables into compare_rating_outputs() with keep_cols, or supply predictors explicitly.",
          call. = FALSE)
   }
-  
+
   summary <- data.frame(
     comparison_rows = nrow(x),
     reference_premium_present = sum(truth_present),
@@ -103,14 +104,28 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
     mean_signed_error = if (any(both_present)) mean(signed_error[both_present], na.rm = TRUE) else NA_real_,
     stringsAsFactors = FALSE
   )
-  
+
+  # Coverage is an actuarial reporting dimension, not automatically a model predictor.
+  coverage_summary <- NULL
+  if ("coverage" %in% names(x)) {
+    coverage_summary <- do.call(rbind, lapply(unique(as.character(x$coverage)), function(cov) {
+      ix <- !is.na(x$coverage) & as.character(x$coverage) == cov
+      denom <- sum(truth_present[ix])
+      data.frame(coverage = cov, comparison_rows = sum(ix), reference_n = denom,
+                 missing_n = sum(candidate_missing[ix]), mismatch_n = sum(material_mismatch[ix]),
+                 mismatch_rate = if (denom) sum(material_mismatch[ix]) / denom else NA_real_,
+                 stringsAsFactors = FALSE)
+    }))
+    rownames(coverage_summary) <- NULL
+  }
+
   level_rows <- list()
   variable_rows <- list()
   li <- 1L; vi <- 1L
   overall_missing <- summary$missing_rate
   overall_mismatch <- if (sum(truth_present)) sum(material_mismatch) / sum(truth_present) else NA_real_
   overall_mae <- summary$mean_absolute_error
-  
+
   for (v in predictors) {
     g <- .rr_diag_group_values(x[[v]])
     keys <- unique(g)
@@ -135,11 +150,11 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
     }))
     rownames(lev) <- NULL
     level_rows[[li]] <- lev; li <- li + 1L
-    
+
     eligible <- lev$reference_n >= max(5L, ceiling(0.0025 * max(1L, sum(truth_present))))
     if (!any(eligible)) eligible <- lev$reference_n > 0L
     e <- lev[eligible, , drop = FALSE]
-    
+
     max_missing_lift <- .rr_safe_max(e$missing_rate - overall_missing, default = 0)
     max_mismatch_lift <- .rr_safe_max(e$mismatch_rate - overall_mismatch, default = 0)
     magnitude_ratio <- if (!is.na(overall_mae) && overall_mae > 0) {
@@ -147,7 +162,7 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
     } else 1
     magnitude_signal <- max(0, min(1, (magnitude_ratio - 1) / 3))
     simple_score <- max(c(max_missing_lift, max_mismatch_lift, magnitude_signal), na.rm = TRUE)
-    
+
     variable_rows[[vi]] <- data.frame(
       variable = v,
       levels = length(keys),
@@ -159,12 +174,44 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
     )
     vi <- vi + 1L
   }
-  
+
   level_details <- do.call(rbind, level_rows)
   variable_summary <- do.call(rbind, variable_rows)
+  # Keep an explicit coverage-by-level view. This is descriptive evidence,
+  # separate from the existing multivariate/interaction suspect ranking.
+  coverage_level_details <- NULL
+  if (!is.null(coverage_summary)) {
+    coverage_level_rows <- list(); cli <- 1L
+    for (v in predictors) {
+      gv <- .rr_diag_group_values(x[[v]])
+      for (cov in coverage_summary$coverage) {
+        in_cov <- !is.na(x$coverage) & as.character(x$coverage) == cov
+        for (level in unique(gv[in_cov])) {
+          ix <- in_cov & gv == level
+          denom <- sum(truth_present[ix])
+          bp <- both_present[ix]
+          mismatch <- material_mismatch[ix]
+          coverage_level_rows[[cli]] <- data.frame(
+            variable = v, level = level, coverage = cov,
+            n = sum(ix), reference_n = denom,
+            missing_n = sum(candidate_missing[ix]), mismatch_n = sum(mismatch),
+            mismatch_rate = if (denom) sum(mismatch) / denom else NA_real_,
+            mean_signed_error = if (any(bp)) mean(signed_error[ix][bp], na.rm = TRUE) else NA_real_,
+            mean_error_if_wrong = if (any(wrong[ix])) mean(signed_error[ix][wrong[ix]], na.rm = TRUE) else NA_real_,
+            stringsAsFactors = FALSE
+          )
+          cli <- cli + 1L
+        }
+      }
+    }
+    if (length(coverage_level_rows)) {
+      coverage_level_details <- do.call(rbind, coverage_level_rows)
+      rownames(coverage_level_details) <- NULL
+    }
+  }
   rownames(level_details) <- NULL
   rownames(variable_summary) <- NULL
-  
+
   model_index <- seq_len(nrow(x))
   if (length(model_index) > model_sample) {
     set.seed(seed)
@@ -177,12 +224,12 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
   model_variables <- utils::head(model_variables, 20L)
   prepared <- lapply(model_variables, function(v) .rr_diag_model_predictor(model_x[[v]], max_model_levels))
   names(prepared) <- model_variables
-  
+
   model_signals <- list(); fits <- list(); mi <- 1L
   for (v in model_variables) {
     px <- prepared[[v]]
     if (length(unique(px[!is.na(px)])) < 2L) next
-    
+
     missing_rows <- !is.na(model_x$current_premium)
     miss_fit <- .rr_diag_binary_model(model_x$.rr_missing[missing_rows], px[missing_rows])
     if (!is.null(miss_fit)) {
@@ -191,7 +238,7 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
       fits[[paste0("missing__", v)]] <- miss_fit$fit
       mi <- mi + 1L
     }
-    
+
     wrong_rows <- !model_x$.rr_missing & !is.na(model_x$current_premium) & !is.na(model_x$proposed_premium)
     wrong_fit <- .rr_diag_binary_model(model_x$.rr_wrong[wrong_rows], px[wrong_rows])
     if (!is.null(wrong_fit)) {
@@ -200,7 +247,7 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
       fits[[paste0("wrong__", v)]] <- wrong_fit$fit
       mi <- mi + 1L
     }
-    
+
     magnitude_rows <- wrong_rows & is.finite(model_x$.rr_abs_error)
     mag_fit <- .rr_diag_continuous_model(log1p(model_x$.rr_abs_error[magnitude_rows]), px[magnitude_rows])
     if (!is.null(mag_fit)) {
@@ -211,7 +258,7 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
     }
   }
   model_signals <- .rr_diag_bind_model_signals(model_signals)
-  
+
   model_best <- if (nrow(model_signals)) {
     stats::aggregate(signal ~ variable, model_signals, max, na.rm = TRUE)
   } else {
@@ -228,14 +275,14 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
                                              -variable_summary$model_score,
                                              variable_summary$variable), , drop = FALSE]
   rownames(variable_summary) <- NULL
-  
+
   interaction_signals <- .rr_diag_interactions(
     model_x = model_x,
     ranked_variables = variable_summary$variable,
     interaction_top = interaction_top,
     max_model_levels = min(max_model_levels, 12L)
   )
-  
+
   suspects <- .rr_diag_suspects(
     variable_summary = variable_summary,
     level_details = level_details,
@@ -245,12 +292,14 @@ diagnose_rating_output <- function(comparison, predictors = NULL,
     overall_mismatch = overall_mismatch,
     overall_mae = overall_mae
   )
-  
+
   out <- list(
     summary = summary,
     suspects = suspects,
     variable_summary = variable_summary,
     level_details = level_details,
+    coverage_summary = coverage_summary,
+    coverage_level_details = coverage_level_details,
     model_signals = model_signals,
     interaction_signals = interaction_signals,
     models = fits,
@@ -279,18 +328,27 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
       "(", .rr_diag_pct(s$missing_rate), ")\n", sep = " ")
   cat(" material wrong:", format(s$material_wrong, big.mark = ","),
       "(", .rr_diag_pct(s$wrong_rate), " of non-missing candidate rows)\n", sep = " ")
-  
+
+  if (!is.null(x$coverage_summary)) {
+    cat("\nCoverage summary (mismatches / reference records):\n")
+    for (i in seq_len(nrow(x$coverage_summary))) {
+      z <- x$coverage_summary[i, , drop = FALSE]
+      cat(" ", z$coverage, ": ", z$mismatch_n, " / ", z$reference_n,
+          " (", .rr_diag_pct(z$mismatch_rate), ")\n", sep = "")
+    }
+  }
+
   if (s$total_mismatch == 0L) {
     cat("\nNo material discrepancies were detected at the specified tolerances.\n")
   } else if (nrow(x$suspects)) {
     cat("\nLikely places to investigate:\n")
     for (i in seq_len(nrow(x$suspects))) {
-      cat(" ", i, ". ", x$suspects$variable[i], " - ", x$suspects$conclusion[i], "\n", sep = "")
+      cat(" ", i, ". ", x$suspects$variable[i], " — ", x$suspects$conclusion[i], "\n", sep = "")
     }
   } else {
     cat("\nNo investigated rating variable meaningfully separates the discrepancies; check for a global error or an omitted predictor.\n")
   }
-  
+
   if (nrow(x$interaction_signals)) {
     sig <- x$interaction_signals[x$interaction_signals$signal >= 0.01, , drop = FALSE]
     if (nrow(sig)) {
@@ -302,8 +360,8 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
       }
     }
   }
-  
-  cat("\nDetailed grouped diagnostics are in $level_details; background model summaries are in $model_signals.\n")
+
+  cat("\nDetailed evidence: $level_details, $coverage_level_details, $model_signals.\n")
   invisible(x)
 }
 
@@ -365,7 +423,7 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
     z <- as.character(x)
   }
   z[is.na(x) | is.na(z) | !nzchar(trimws(z))] <- "<NA>"
-  
+
   tab <- sort(table(z), decreasing = TRUE)
   if (length(tab) > max_levels) {
     keep <- names(tab)[seq_len(max(1L, max_levels - 1L))]
@@ -418,12 +476,12 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
   vars <- utils::head(ranked_variables, interaction_top)
   pairs <- utils::combn(vars, 2L, simplify = FALSE)
   rows <- list(); ri <- 1L
-  
+
   for (pair in pairs) {
     a <- pair[1]; b <- pair[2]
     x1 <- .rr_diag_model_predictor(model_x[[a]], max_model_levels)
     x2 <- .rr_diag_model_predictor(model_x[[b]], max_model_levels)
-    
+
     outcomes <- list(
       missing = list(
         y = model_x$.rr_missing,
@@ -441,14 +499,14 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
         family = "continuous"
       )
     )
-    
+
     for (nm in names(outcomes)) {
       o <- outcomes[[nm]]
       keep <- o$rows & !is.na(x1) & !is.na(x2) & !is.na(o$y)
       if (sum(keep) < 40L) next
       d <- data.frame(y = o$y[keep], x1 = droplevels(x1[keep]), x2 = droplevels(x2[keep]))
       if (nlevels(d$x1) < 2L || nlevels(d$x2) < 2L) next
-      
+
       signal <- NA_real_
       if (o$family == "binary") {
         if (length(unique(d$y)) < 2L) next
@@ -469,7 +527,7 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
           signal <- max(0, min(1, int_r2 - add_r2))
         }
       }
-      
+
       if (is.finite(signal)) {
         rows[[ri]] <- data.frame(variable1 = a, variable2 = b, outcome = nm,
                                  signal = signal, stringsAsFactors = FALSE)
@@ -477,7 +535,7 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
       }
     }
   }
-  
+
   if (!length(rows)) return(.rr_empty_interactions())
   out <- do.call(rbind, rows)
   out <- out[order(-out$signal, out$variable1, out$variable2, out$outcome), , drop = FALSE]
@@ -500,31 +558,40 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
   }
   vs <- utils::head(variable_summary, top_n)
   rows <- vector("list", nrow(vs))
-  
+
   for (i in seq_len(nrow(vs))) {
     v <- vs$variable[i]
     lev <- level_details[level_details$variable == v, , drop = FALSE]
     sig <- model_signals[model_signals$variable == v, , drop = FALSE]
     strongest <- if (nrow(sig)) sig$outcome[which.max(sig$signal)] else "grouped_scan"
-    
-    eligible <- lev$reference_n >= max(5L, ceiling(0.0025 * max(1L, sum(lev$reference_n))))
-    if (!any(eligible)) eligible <- lev$reference_n > 0L
+
+    # The scoring stage may suppress tiny levels to stabilize rankings, but
+    # the narrative must not discard the very rare level causing the defect.
+    # Retain every observed level in the narrative: even a one-record tripwire
+    # must not be excluded simply because it is rare. Counts communicate its size.
+    eligible <- lev$reference_n > 0L
     e <- lev[eligible, , drop = FALSE]
-    
+
     if (strongest == "missing" || vs$max_missing_lift[i] >= vs$max_mismatch_lift[i] &&
         vs$max_missing_lift[i] >= 0.02) {
+      valid <- e$missing_n > 0L & !is.na(e$missing_rate)
+      if (any(valid)) e <- e[valid, , drop = FALSE]
       j <- which.max(ifelse(is.na(e$missing_rate), -Inf, e$missing_rate))
       conclusion <- paste0(
         "missing premiums are concentrated at ", v, " = ", e$level[j],
-        " (", .rr_diag_pct(e$missing_rate[j]), " missing vs ", .rr_diag_pct(overall_missing), " overall)"
+        " (", e$missing_n[j], "/", e$reference_n[j], "; ",
+        .rr_diag_pct(e$missing_rate[j]), " missing vs ", .rr_diag_pct(overall_missing), " overall)"
       )
       strongest <- "missing"
     } else if (strongest == "wrong" || vs$max_mismatch_lift[i] >= 0.02) {
+      valid <- e$mismatch_n > 0L & !is.na(e$mismatch_rate)
+      if (any(valid)) e <- e[valid, , drop = FALSE]
       j <- which.max(ifelse(is.na(e$mismatch_rate), -Inf, e$mismatch_rate))
       direction <- .rr_diag_direction(e$mean_signed_error[j])
       conclusion <- paste0(
         "premium mismatches are concentrated at ", v, " = ", e$level[j],
-        " (", .rr_diag_pct(e$mismatch_rate[j]), " mismatched vs ", .rr_diag_pct(overall_mismatch), " overall",
+        " (", e$mismatch_n[j], "/", e$reference_n[j], "; ",
+        .rr_diag_pct(e$mismatch_rate[j]), " mismatched vs ", .rr_diag_pct(overall_mismatch), " overall",
         if (nzchar(direction)) paste0("; ", direction) else "", ")"
       )
       strongest <- "wrong"
@@ -544,7 +611,7 @@ print.raterevision_rater_diagnosis <- function(x, ...) {
       )
       strongest <- "error_magnitude"
     }
-    
+
     rows[[i]] <- data.frame(
       rank = i,
       variable = v,

@@ -43,8 +43,9 @@ interaction diagnostics. Set to \code{0} to skip interaction models.}
 }
 \value{
 An object of class \code{raterevision_rater_diagnosis} containing summary
-counts, variable/level diagnostics, model signals, interaction signals, and
-the fitted lightweight models for advanced inspection.
+counts, variable/level diagnostics, optional \code{coverage_summary} and
+\code{coverage_level_details} (when \code{coverage} is present), model signals,
+interaction signals, and the fitted lightweight models for advanced inspection.
 }
 \description{
 Uses grouped discrepancy scans and lightweight statistical models to identify
