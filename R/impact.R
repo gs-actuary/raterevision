@@ -13,7 +13,7 @@
 #'   coverage label. Defaults to `"indicated_"`.
 #' @param premium_col For long input, the premium column name.
 #' @param coverage_col For long input, the coverage/peril column name.
-#' @param keep_cols Additional columns from current output to carry into the
+#' @param keep_cols Additional columns from proposed output to carry into the
 #'   comparison (for example `charter` or `territory`).
 #'
 #' @return Long comparison data with current/proposed premium and changes.
@@ -23,8 +23,8 @@ compare_rating_outputs <- function(current, proposed, id_cols,
                                    premium_col = NULL, coverage_col = NULL,
                                    keep_cols = NULL) {
   if (!is.data.frame(current) || !is.data.frame(proposed)) stop("current and proposed must be data frames.", call. = FALSE)
-  .rr_assert_cols(current, unique(c(id_cols, keep_cols)), "current")
-  .rr_assert_cols(proposed, id_cols, "proposed")
+  .rr_assert_cols(current, id_cols, "current")
+  .rr_assert_cols(proposed, unique(c(id_cols, keep_cols)), "proposed")
 
   if (!is.null(premium_col) || !is.null(coverage_col)) {
     if (is.null(premium_col) || is.null(coverage_col)) stop("premium_col and coverage_col must be supplied together.", call. = FALSE)
@@ -35,7 +35,11 @@ compare_rating_outputs <- function(current, proposed, id_cols,
     if (anyDuplicated(ka) || anyDuplicated(kb)) stop("id_cols + coverage_col must uniquely identify rating output rows.", call. = FALSE)
     if (!setequal(ka, kb)) stop("Current and proposed output do not contain the same rating keys.", call. = FALSE)
     m <- match(ka, kb)
-    out <- current[unique(c(id_cols, keep_cols, coverage_col))]
+    out <- current[unique(c(id_cols, coverage_col))]
+    
+    for (kc in setdiff(keep_cols, c(id_cols, coverage_col))) {
+      out[[kc]] <- proposed[[kc]][m]
+    }
     names(out)[names(out) == coverage_col] <- "coverage"
     out$current_premium <- as.numeric(current[[premium_col]])
     out$proposed_premium <- as.numeric(proposed[[premium_col]][m])
@@ -51,7 +55,11 @@ compare_rating_outputs <- function(current, proposed, id_cols,
     if (!setequal(ka, kb)) stop("Current and proposed output do not contain the same record keys.", call. = FALSE)
     m <- match(ka, kb)
     pieces <- lapply(premium_cols, function(pc) {
-      z <- current[unique(c(id_cols, keep_cols))]
+      z <- current[id_cols]
+      
+      for (kc in setdiff(keep_cols, id_cols)) {
+        z[[kc]] <- proposed[[kc]][m]
+      }
       z$coverage <- if (nzchar(premium_prefix) && startsWith(pc, premium_prefix)) substring(pc, nchar(premium_prefix) + 1L) else pc
       z$current_premium <- as.numeric(current[[pc]])
       z$proposed_premium <- as.numeric(proposed[[pc]][m])

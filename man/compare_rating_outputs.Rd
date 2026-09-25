@@ -32,7 +32,7 @@ coverage label. Defaults to \code{"indicated_"}.}
 
 \item{coverage_col}{For long input, the coverage/peril column name.}
 
-\item{keep_cols}{Additional columns from current output to carry into the
+\item{keep_cols}{Additional columns from proposed output to carry into the
 comparison (for example \code{charter} or \code{territory}).}
 }
 \value{
