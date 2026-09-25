@@ -49,8 +49,12 @@ cat('PASS .01 materiality: one wrong BI row, one missing CL row.\n')
 reference_total <- data.frame(vehicle_id = id,
   indicated_total = rowSums(reference[c('indicated_BI','indicated_CL')]) + 17)
 # Candidate billed total computed independently, not rowSums(..., na.rm=TRUE).
-candidate_total <- data.frame(vehicle_id = id,
-  indicated_total = rowSums(candidate[c('indicated_BI','indicated_CL')]) + 17)
+candidate_total <- data.frame(
+  vehicle_id = candidate$vehicle_id,
+  indicated_total = rowSums(
+    candidate[c('indicated_BI', 'indicated_CL')]
+  ) + 17
+)
 # V7 has a missing coverage, so its billed total is also missing.
 stopifnot(is.na(candidate_total$indicated_total[candidate_total$vehicle_id == 'V7']))
 total_cmp <- compare_rating_outputs(reference_total, candidate_total, 'vehicle_id',
